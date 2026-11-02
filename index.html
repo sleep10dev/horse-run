@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Corrida do Cavalo - Dino Style</title>
+
+<style>
+  body {
+    margin: 0;
+    background: #f7f7f7;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    font-family: 'Courier New', Courier, monospace;
+    overflow: hidden;
+    touch-action: manipulation;
+  }
+
+  canvas {
+    border: 3px solid #535353;
+    background: #ffffff;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+    max-width: 100%;
+    height: auto;
+  }
+
+  p {
+    color: #535353;
+    font-size: 16px;
+    margin-top: 15px;
+    font-weight: bold;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<!-- Tela maior -->
+<canvas id="game" width="1200" height="500"></canvas>
+<p>Pressione <b>ESPAÇO</b>, <b>SETA PARA CIMA</b> ou <b>TOQUE NA TELA</b> para pular.</p>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+
+// Configuração do Gerador de Som (Web Audio API)
+let audioCtx = null;
+
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+}
+
+// Som de Pulo
+function playJumpSound() {
+  initAudio();
+  if (!audioCtx) return;
+  
+  let osc = audioCtx.createOscillator();
+  let gain = audioCtx.createGain();
+  
+  osc.type = 'square';
+  // Frequência sobe rapidamente para imitar o pulo
+  osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.15);
+  
+  gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+  
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.15);
+}
+
+// Som a cada 100 pontos
+function playMilestoneSound() {
+  initAudio();
+  if (!audioCtx) return;
+  
+  let now = audioCtx.currentTime;
+  let notes = [523.25, 659.25, 783.99, 1046.50]; // Acorde alegre (C5, E5, G5, C6)
+  
+  notes.forEach((freq, index) => {
+    let osc = audioCtx.createOscillator();
+    let gain = audioCtx.createGain();
+    
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(freq, now + index * 0.08);
+    
+    gain.gain.setValueAtTime(0.15, now + index * 0.08);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + (index + 1) * 0.08 + 0.05);
+    
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    
+    osc.start(now + index * 0.08);
+    osc.stop(now + (index + 1) * 0.08 + 0.05);
+  });
+}
+
+let score = 0;
+let highScore = localStorage.getItem("horseHighScore") || 0;
+let isGameOver = false;
+let gameSpeed = 7;
+let spawnTimer = 0;
+let lastMilestone = 0; // Para controlar quando tocou o som de 100 pontos
+
+// O teu sprite original do cavalo
+const sprite = [
+".............................#....#.....",
+".............................##..##.....",
+".............................######.....",
+"...........................###MMMM##....",
+"..........................##MMMMMMM#....",
+"........................###MMMMMMMM##...",
+"........................#OOOOOOOOOOO###.",
+".....#........###########OOOOOOOOOOOO##.",
+"..#####....####OOOOOOOOOOOOOOOOOOOOOO#..",
+".....#######OOOOOOOOOOOOOOOOO#######...",
+"....##OOOOOOOOOOOOOOOOOOOOOOOOO#.#......",
+"..######OOOOOOOOOOOOOOOOOOOOOOO#........",
+".#.....#OOOOOOOOOOOOOOOOOOOOOO##........",
+".......##OOOOOOOOOOOOOOOOOOO###.........",
+"........##OOOOOOOOOOOOOOOOO##...........",
+".........##OOOOOOOOOOOOOOO##............",
+"..........#OOOOOOOOOOO###O#.............",
+"..........#OOO######OO#.#O#.............",
+".........##OOO#....#OO#.#OO##............",
+".........#OOOO#....#OO#.#OO#............",
+".........#OOO##....#OO#.#O##............",
+".........#OO##.....#OO#.###.............",
+".........####......####..................",
+"........................................"
+];
+
+const groundY = 380;
+
+const horse = {
+  x: 100,
+  y: groundY - (sprite.length * 3),
+  width: sprite[0].length * 3,
+  height: sprite.length * 3,
+  size: 3,
+  dy: 0,
+  jumpForce: -13,
+  gravity: 0.6,
+  grounded: true,
+
+  jump: function() {
+    if (this.grounded) {
+      this.dy = this.jumpForce;
+      this.grounded = false;
+      playJumpSound(); // Toca o som ao saltar
+    }
+  },
+
+  update: function() {
+    this.dy += this.gravity;
+    this.y += this.dy;
+
+    const limitY = groundY - this.height;
+    if (this.y > limitY) {
+      this.y = limitY;
+      this.dy = 0;
+      this.grounded = true;
+    }
+  }
+};
+
+function drawHorse() {
+  const s = horse.size;
+
+  sprite.forEach((row, y) => {
+    [...row].forEach((pixel, x) => {
+      if (pixel !== ".") {
+        if (pixel === "M") {
+          ctx.fillStyle = "#333333";
+        } else if (pixel === "O") {
+          ctx.fillStyle = "#777777";
+        } else {
+          ctx.fillStyle = "#535353";
+        }
+        ctx.fillRect(
+          horse.x + x * s,
+          horse.y + y * s,
+          s,
+          s
+        );
+      }
+    });
+  });
+}
+
+// Sistema de Nuvens no Céu
+let clouds = [
+  { x: 300, y: 80, width: 80, height: 24, speed: 1.5 },
+  { x: 750, y: 130, width: 100, height: 30, speed: 1 },
+  { x: 1100, y: 70, width: 60, height: 20, speed: 1.8 }
+];
+
+function updateClouds() {
+  clouds.forEach(cloud => {
+    cloud.x -= cloud.speed;
+    if (cloud.x + cloud.width < 0) {
+      cloud.x = canvas.width + 50;
+      cloud.y = 50 + Math.random() * 100;
+    }
+  });
+}
+
+function drawClouds() {
+  ctx.fillStyle = "#e0e0e0";
+  clouds.forEach(cloud => {
+    let px = 3;
+    let cx = cloud.x;
+    let cy = cloud.y;
+    ctx.fillRect(cx + 12, cy, px * 14, px * 3);
+    ctx.fillRect(cx + 6, cy + 9, px * 22, px * 3);
+    ctx.fillRect(cx, cy + 18, px * 28, px * 3);
+  });
+}
+
+let obstacles = [];
+
+function spawnObstacle() {
+  const types = ['cerca', 'cobra'];
+  const type = types[Math.floor(Math.random() * types.length)];
+  
+  let obs = {
+    x: canvas.width,
+    type: type,
+    width: type === 'cerca' ? 45 : 50,
+    height: type === 'cerca' ? 55 : 30,
+    y: type === 'cerca' ? groundY - 55 : groundY - 30
+  };
+  obstacles.push(obs);
+}
+
+function triggerAction(e) {
+  if (e) e.preventDefault();
+  
+  if (isGameOver) {
+    resetGame();
+  } else {
+    horse.jump();
+  }
+}
+
+window.addEventListener("keydown", (e) => {
+  if (e.code === "Space" || e.code === "ArrowUp") {
+    triggerAction(e);
+  }
+});
+
+canvas.addEventListener("touchstart", (e) => {
+  triggerAction(e);
+}, { passive: false });
+
+canvas.addEventListener("click", (e) => {
+  if (e.pointerType === 'touch') return; 
+  triggerAction(e);
+});
+
+function resetGame() {
+  obstacles = [];
+  score = 0;
+  gameSpeed = 7;
+  isGameOver = false;
+  spawnTimer = 0;
+  lastMilestone = 0;
+  loop();
+}
+
+function update() {
+  if (isGameOver) return;
+
+  horse.update();
+  updateClouds();
+
+  spawnTimer++;
+  let spawnInterval = Math.max(50, 90 - Math.floor(gameSpeed * 3));
+  if (spawnTimer > spawnInterval) {
+    spawnObstacle();
+    spawnTimer = 0;
+  }
+
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    obstacles[i].x -= gameSpeed;
+
+    let margin = 10;
+    if (
+      horse.x + margin < obstacles[i].x + obstacles[i].width - margin &&
+      horse.x + horse.width - margin > obstacles[i].x + margin &&
+      horse.y + margin < obstacles[i].y + obstacles[i].height &&
+      horse.y + horse.height > obstacles[i].y
+    ) {
+      isGameOver = true;
+      
+      if (score > highScore) {
+        highScore = score;
+        localStorage.setItem("horseHighScore", highScore);
+      }
+    }
+
+    if (obstacles[i].x + obstacles[i].width < 0) {
+      obstacles.splice(i, 1);
+      score += 10;
+      
+      // Verifica se atingiu um múltiplo de 100 pontos para tocar o som especial
+      if (score > 0 && score % 100 === 0 && score !== lastMilestone) {
+        lastMilestone = score;
+        playMilestoneSound();
+      }
+      
+      gameSpeed += 0.25; 
+      if (gameSpeed > 18) gameSpeed = 18; 
+    }
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  drawClouds();
+
+  ctx.fillStyle = "#535353";
+  ctx.fillRect(0, groundY, canvas.width, 3);
+
+  ctx.fillRect(300, groundY - 4, 4, 4);
+  ctx.fillRect(700, groundY - 6, 6, 6);
+  ctx.fillRect(1050, groundY - 5, 5, 5);
+
+  drawHorse();
+
+  obstacles.forEach(obs => {
+    ctx.fillStyle = "#535353";
+    let px = 3;
+    let ox = obs.x;
+    let oy = obs.y;
+
+    if (obs.type === 'cerca') {
+      ctx.fillRect(ox + 4, oy, px * 3, px * 18);
+      ctx.fillRect(ox + 12, oy, px * 3, px * 18);
+      ctx.fillRect(ox, oy + 6, px * 15, px * 2.5);
+      ctx.fillRect(ox, oy + 12, px * 15, px * 2.5);
+    } else {
+      ctx.fillRect(ox, oy + 6, px * 5, px * 3);
+      ctx.fillRect(ox + 10, oy, px * 5, px * 4);
+      ctx.fillRect(ox + 20, oy + 6, px * 5, px * 3);
+    }
+  });
+
+  ctx.fillStyle = "#535353";
+  ctx.font = "20px 'Courier New'";
+  let formattedScore = String(score).padStart(5, '0');
+  let formattedHi = String(highScore).padStart(5, '0');
+  ctx.fillText(`HI ${formattedHi}  ${formattedScore}`, canvas.width - 280, 40);
+
+  if (isGameOver) {
+    ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    ctx.fillStyle = "#535353";
+    ctx.font = "30px 'Courier New'";
+    ctx.textAlign = "center";
+    ctx.fillText("FIM DE JOGO", canvas.width / 2, canvas.height / 2 - 20);
+    ctx.font = "16px 'Courier New'";
+    ctx.fillText("Toque na tela ou aperte Espaço para reiniciar", canvas.width / 2, canvas.height / 2 + 20);
+    ctx.textAlign = "left";
+  }
+}
+
+function loop() {
+  update();
+  draw();
+  if (!isGameOver) {
+    requestAnimationFrame(loop);
+  }
+}
+
+loop();
+</script>
+
+</body>
+</html>
